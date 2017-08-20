@@ -44,7 +44,13 @@ extern module sftp_module;
 
 struct sftp_hostkey {
   enum sftp_key_type_e key_type;
+
+  /* For OpenSSL keys */
   EVP_PKEY *pkey;
+
+  /* Non-OpenSSL keys */
+  unsigned char *ed25519_privkey;
+  unsigned char *ed25519_pubkey;
 
   const unsigned char *key_data;
   uint32_t key_datalen;
@@ -69,6 +75,10 @@ static struct sftp_hostkey *sftp_ecdsa256_hostkey = NULL;
 static struct sftp_hostkey *sftp_ecdsa384_hostkey = NULL;
 static struct sftp_hostkey *sftp_ecdsa521_hostkey = NULL;
 #endif /* PR_USE_OPENSSL_ECC */
+
+#if defined(HAVE_SODIUM_H)
+static struct sftp_hostkey *sftp_ed25519_hostkey = NULL;
+#endif /* HAVE_SODIUM_H */
 
 static const char *passphrase_provider = NULL;
 
@@ -1075,6 +1085,11 @@ static EVP_PKEY *get_pkey_from_data(pool *p, unsigned char *pkey_data,
              strncmp(pkey_type, "ecdsa-sha2-nistp521", 20) == 0) {
     pkey = get_ecdsa_pkey_from_data(p, pkey_data, pkey_datalen, pkey_type);
 #endif /* PR_USE_OPENSSL_ECC */
+#if defined(HAVE_SODIUM_H)
+  } else if (strncmp(pkey_type, "ssh-ed25519", 12) == 0) {
+    /* XXX TODO */
+
+#endif /* HAVE_SODIUM_H */
 
 #ifdef PR_USE_SODIUM
   } else if (strncmp(pkey_type, "ssh-ed25519", 12) == 0) {
@@ -2594,6 +2609,11 @@ const unsigned char *sftp_keys_get_hostkey_data(pool *p,
     }
 
 #endif /* PR_USE_OPENSSL_ECC */
+#if defined(HAVE_SODIUM_H)
+    case SFTP_KEY_ED25519: {
+/* XXX TODO */
+    }
+#endif /* HAVE_SODIUM_H */
 
     default:
       (void) pr_log_writefile(sftp_logfd, MOD_SFTP_VERSION,

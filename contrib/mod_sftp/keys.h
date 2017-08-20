@@ -73,6 +73,7 @@ int sftp_keys_clear_dsa_hostkey(void);
 int sftp_keys_clear_ecdsa_hostkey(void);
 int sftp_keys_clear_ed25519_hostkey(void);
 int sftp_keys_clear_rsa_hostkey(void);
+
 int sftp_keys_have_dsa_hostkey(void);
 int sftp_keys_have_ecdsa_hostkey(pool *, int **);
 int sftp_keys_have_ed25519_hostkey(void);

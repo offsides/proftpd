@@ -70,12 +70,12 @@ static int send_pubkey_ok(const char *algo, const unsigned char *pubkey_data,
   (void) pr_log_writefile(sftp_logfd, MOD_SFTP_VERSION, "sending publickey OK");
 
   res = sftp_ssh2_packet_write(sftp_conn->wfd, pkt);
+  destroy_pool(pkt->pool);
+
   if (res < 0) {
-    destroy_pool(pkt->pool);
     return -1;
   }
 
-  destroy_pool(pkt->pool);
   return 0;
 }
 
@@ -142,6 +142,11 @@ int sftp_auth_publickey(struct ssh2_packet *pkt, cmd_rec *pass_cmd,
   } else if (strncmp(pubkey_algo, "ecdsa-sha2-nistp521", 20) == 0) {
     pubkey_type = SFTP_KEY_ECDSA_521;
 #endif /* PR_USE_OPENSSL_ECC */
+
+#ifdef PR_USE_SODIUM
+  } else if (strncmp(pubkey_algo, "ssh-ed25519", 12) == 0) {
+    pubkey_type = SFTP_KEY_ED25519;
+#endif /* PR_USE_SODIUM */
 
   /* XXX This is where we would add support for X509 public keys, e.g.:
    *

@@ -132,6 +132,11 @@ my $TESTS = {
     test_class => [qw(forking ssh2)],
   },
 
+  ssh2_ext_hostkey_ed25519 => {
+    order => ++$order,
+    test_class => [qw(forking ssh2)],
+  },
+
   ssh2_cipher_c2s_aes256_cbc => {
     order => ++$order,
     test_class => [qw(forking ssh2)],
@@ -389,6 +394,11 @@ my $TESTS = {
   ssh2_ext_auth_publickey_ecdsa521 => {
     order => ++$order,
     test_class => [qw(forking ssh2)],
+  },
+
+  ssh2_ext_auth_publickey_ed25519 => {
+    order => ++$order,
+    test_class => [qw(feature_sodium forking ssh2)],
   },
 
   # This fails because of a bug in Net::SSH2; I've filed a bug report
@@ -1789,7 +1799,10 @@ sub list_tests {
     }
   }
 
-  return @tests;
+#  return @tests;
+  return qw(
+    ssh2_ext_hostkey_ed25519
+  );
 }
 
 sub set_up {
@@ -1805,6 +1818,7 @@ sub set_up {
   my $ecdsa256_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/ssh_host_ecdsa256_key');
   my $ecdsa384_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/ssh_host_ecdsa384_key');
   my $ecdsa521_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/ssh_host_ecdsa521_key');
+  my $ed25519_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/ssh_host_ed25519_key');
   my $passphrase_rsa_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/passphrase_host_rsa_key');
   my $passphrase_dsa_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/passphrase_host_dsa_key');
 
@@ -12769,6 +12783,195 @@ sub ssh2_ext_auth_publickey_ecdsa521 {
   }
 
   unlink($log_file);
+}
+
+sub ssh2_ext_auth_publickey_ed25519 {
+  my $self = shift;
+  my $tmpdir = $self->{tmpdir};
+  my $setup = test_setup($tmpdir, 'sftp');
+
+  my $rsa_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/ssh_host_rsa_key');
+  my $dsa_host_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/ssh_host_dsa_key');
+
+  my $ed25519_priv_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/test_ed25519_key');
+  my $ed25519_pub_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/test_ed25519_key.pub');
+  my $ed25519_rfc4716_key = File::Spec->rel2abs('t/etc/modules/mod_sftp/authorized_ed25519_keys');
+
+  my $authorized_keys = File::Spec->rel2abs("$tmpdir/.authorized_keys");
+  unless (copy($ed25519_rfc4716_key, $authorized_keys)) {
+    die("Can't copy $ed25519_rfc4716_key to $authorized_keys: $!");
+  }
+
+  my $src_file = File::Spec->rel2abs("$tmpdir/src.txt");
+  if (open(my $fh, "> $src_file")) {
+    print $fh "Hello, World!\n";
+
+    unless (close($fh)) {
+      die("Can't write $src_file: $!");
+    }
+
+  } else {
+    die("Can't open $src_file: $!");
+  }
+
+  my $src_sz = (stat($src_file))[7];
+
+  my $dst_file = File::Spec->rel2abs("$tmpdir/dst.txt");
+
+  my $batch_file = File::Spec->rel2abs("$tmpdir/sftp-batch.conf");
+  if (open(my $fh, "> $batch_file")) {
+    print $fh "put -P $src_file $dst_file\n";
+
+    unless (close($fh)) {
+      die("Can't write $batch_file: $!");
+    }
+
+  } else {
+    die("Can't open $batch_file: $!");
+  }
+
+  my $config = {
+    PidFile => $setup->{pid_file},
+    ScoreboardFile => $setup->{scoreboard_file},
+    SystemLog => $setup->{log_file},
+    TraceLog => $setup->{log_file},
+    Trace => 'ssh2:20 sftp:20',
+
+    AuthUserFile => $setup->{auth_user_file},
+    AuthGroupFile => $setup->{auth_group_file},
+
+    IfModules => {
+      'mod_delay.c' => {
+        DelayEngine => 'off',
+      },
+
+      'mod_sftp.c' => [
+        "SFTPEngine on",
+        "SFTPLog $setup->{log_file}",
+        "SFTPHostKey $rsa_host_key",
+        "SFTPHostKey $dsa_host_key",
+        "SFTPAuthorizedUserKeys file:~/.authorized_keys",
+      ],
+    },
+  };
+
+  my ($port, $config_user, $config_group) = config_write($setup->{config_file},
+    $config);
+
+  # Open pipes, for use between the parent and child processes.  Specifically,
+  # the child will indicate when it's done with its test by writing a message
+  # to the parent.
+  my ($rfh, $wfh);
+  unless (pipe($rfh, $wfh)) {
+    die("Can't open pipe: $!");
+  }
+
+  require Net::SSH2;
+
+  my $ex;
+
+  # Fork child
+  $self->handle_sigchld();
+  defined(my $pid = fork()) or die("Can't fork: $!");
+  if ($pid) {
+    eval {
+      # libssh2, and thus Net::SSH2, don't support ECC/ECDH yet.  So we
+      # use the external sftp(1) client (e.g. OpenSSH-7.4p1) to test.
+
+      my $sftp = '/Users/tj/local/openssh-7.4p1/bin/sftp';
+
+      my @cmd = (
+        $sftp,
+        '-oBatchMode=yes',
+        '-oCheckHostIP=no',
+        '-oCompression=yes',
+        "-oPort=$port",
+        "-oIdentityFile=$ed25519_priv_key",
+        '-oPubkeyAuthentication=yes',
+        '-oStrictHostKeyChecking=no',
+        '-vvv',
+        '-b',
+        $batch_file,
+        "$setup->{user}\@127.0.0.1",
+      );
+
+      my $sftp_rh = IO::Handle->new();
+      my $sftp_wh = IO::Handle->new();
+      my $sftp_eh = IO::Handle->new();
+
+      $sftp_wh->autoflush(1);
+
+      sleep(1);
+
+      local $SIG{CHLD} = 'DEFAULT';
+
+      # Make sure that the perms on the priv key are what OpenSSH wants
+      unless (chmod(0400, $ed25519_priv_key)) {
+        die("Can't set perms on $ed25519_priv_key to 0400: $!");
+      }
+
+      if ($ENV{TEST_VERBOSE}) {
+        print STDERR "Executing: ", join(' ', @cmd), "\n";
+      }
+
+      my $sftp_pid = open3($sftp_wh, $sftp_rh, $sftp_eh, @cmd);
+      waitpid($sftp_pid, 0);
+      my $exit_status = $?;
+
+      # Restore the perms on the priv key
+      unless (chmod(0644, $ed25519_priv_key)) {
+        die("Can't set perms on $ed25519_priv_key to 0644: $!");
+      }
+
+      my ($res, $errstr);
+      if ($exit_status >> 8 == 0) {
+        $errstr = join('', <$sftp_eh>);
+        $res = 0;
+
+      } else {
+        $errstr = join('', <$sftp_eh>);
+        if ($ENV{TEST_VERBOSE}) {
+          print STDERR "Stderr: $errstr\n";
+        }
+
+        $res = 1;
+      }
+
+      unless ($res == 0) {
+        die("Can't upload $src_file to server: $errstr");
+      }
+
+      unless (-f $dst_file) {
+        die("File '$dst_file' does not exist as expected");
+      }
+
+      my $sz = (stat($dst_file))[7];
+      my $expected_sz = $src_sz;
+      $self->assert($expected_sz == $sz,
+        test_msg("Expected file size $expected_sz, got $sz"));
+    };
+    if ($@) {
+      $ex = $@;
+    }
+
+    $wfh->print("done\n");
+    $wfh->flush();
+
+  } else {
+    eval { server_wait($setup->{config_file}, $rfh) };
+    if ($@) {
+      warn($@);
+      exit 1;
+    }
+
+    exit 0;
+  }
+
+  # Stop server
+  server_stop($setup->{pid_file});
+  $self->assert_child_ok($pid);
+
+  test_cleanup($setup->{log_file}, $ex);
 }
 
 sub ssh2_auth_no_authorized_keys {
